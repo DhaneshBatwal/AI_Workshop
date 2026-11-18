@@ -1,0 +1,20 @@
+# Python-generated files
+__pycache__/
+*.py[cod]
+*.pyd
+
+# Local environments and secrets
+venv/
+.venv/
+.env
+.env.*
+!.env.example
+
+# Local-only editor and agent files
+.agents/
+.claude/
+skills/
+skills-lock.json
+
+# Design references; not required by the API at runtime
+Screenshot/
