@@ -11,11 +11,22 @@ const IMAGES = [
  "https://images.unsplash.com/photo-1509062522246-3755977927d7?auto=format&fit=crop&w=900&q=80",
  "https://images.unsplash.com/photo-1519389950473-47ba0277781c?auto=format&fit=crop&w=900&q=80",
 ];
-async function api(path, options = {}) {
- const response = await fetch(`${API}${path}`, { ...options, headers: { "Content-Type": "application/json", ...options.headers } });
- const data = await response.json().catch(() => null);
- if (!response.ok) throw new Error(data?.error || `Request failed (${response.status})`);
- return data;
+const inflightGets = new Map();
+function api(path, options = {}) {
+ const method = String(options.method || "GET").toUpperCase();
+ const key = `${method}:${path}`;
+ if (method === "GET" && inflightGets.has(key)) return inflightGets.get(key);
+ const request = fetch(`${API}${path}`, { ...options, headers: { "Content-Type": "application/json", ...options.headers } })
+  .then(async response => {
+   const data = await response.json().catch(() => null);
+   if (!response.ok) throw new Error(data?.error || `Request failed (${response.status})`);
+   return data;
+  });
+ if (method === "GET") {
+  inflightGets.set(key, request);
+  request.then(() => inflightGets.delete(key), () => inflightGets.delete(key));
+ }
+ return request;
 }
 function closed(event) { return /closed|cancel|sold/i.test(String(event.status || "")); }
 function eventFull(event) { return Boolean(event?.is_full || event?.available_seats === 0 || closed(event)); }
@@ -52,15 +63,26 @@ export default function App() {
  const [modal, setModal] = useState(""), [selected, setSelected] = useState(null), [notice, setNotice] = useState(null), [busy, setBusy] = useState(false);
  const [registrations, setRegistrations] = useState([]), [regError, setRegError] = useState("");
  const [attendees, setAttendees] = useState([]), [rosterId, setRosterId] = useState(""), [rosterBusy, setRosterBusy] = useState(false), [rosterError, setRosterError] = useState(""), [attendeeSearch, setAttendeeSearch] = useState("");
- const [adminRows, setAdminRows] = useState([]), [adminBusy, setAdminBusy] = useState(false), [adminError, setAdminError] = useState(""), [adminEventId, setAdminEventId] = useState(""), [adminSearch, setAdminSearch] = useState("");
+ const [adminRows, setAdminRows] = useState([]), [adminBusy, setAdminBusy] = useState(false), [adminError, setAdminError] = useState(""), [adminEventId, setAdminEventId] = useState(""), [adminSearch, setAdminSearch] = useState(""), [adminRosterBusy, setAdminRosterBusy] = useState(false), [adminRosterError, setAdminRosterError] = useState("");
 
  const loadEvents = useCallback(async () => { setLoading(true); setError(""); try { const rows = await api("/api/events"); const live = await mapLimit(Array.isArray(rows) ? rows : [], 5, eventWithLiveSeats); setEvents(live); } catch (e) { setError(e.message); } finally { setLoading(false); } }, []);
  const loadUsers = useCallback(async () => { setUsersLoading(true); setUsersError(""); try { const rows = await api("/api/users"); setUsers(Array.isArray(rows) ? rows : []); } catch (e) { setUsersError(usersProblem(e.message)); } finally { setUsersLoading(false); } }, []);
- useEffect(() => { loadEvents(); loadUsers(); }, [loadEvents, loadUsers]);
+ useEffect(() => { loadUsers(); }, [loadUsers]);
  useEffect(() => { if (!users.length) return; if (!users.some(user => user.id === userId)) { const first = users[0].id; setUserId(first); save(USER_KEY, first); } const organizers = users.filter(user => String(user.role || "").toLowerCase() === "organizer"); const options = organizers.length ? organizers : users; if (!options.some(user => user.id === organizerId)) { const first = options[0]?.id || ""; setOrganizerId(first); save(ORGANIZER_KEY, first); } }, [users, userId, organizerId]);
  useEffect(() => { if (!notice) return; const t = setTimeout(() => setNotice(null), 3500); return () => clearTimeout(t); }, [notice]);
  useEffect(() => { const key = e => { if (e.key === "Escape") { setModal(""); setRoleOpen(false); } }; window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key); }, []);
- useEffect(() => { if (role === "Admin" && page === "admin") loadAdmin(); }, [role, page]);
+ useEffect(() => { if (role === "Admin" && page === "admin") loadAdmin(); else loadEvents(); }, [role, page]);
+ useEffect(() => {
+  if (role !== "Admin" || page !== "admin" || !adminEventId) return;
+  let current = true;
+  setAdminRosterBusy(true); setAdminRosterError("");
+  api(`/api/events/${encodeURIComponent(adminEventId)}/registrations`).then(rows => {
+   if (!current) return;
+   setAdminRows(items => items.map(row => row.event.id === adminEventId ? { ...row, attendees: Array.isArray(rows) ? rows : [] } : row));
+  }).catch(e => { if (current) setAdminRosterError(e.message); })
+   .finally(() => { if (current) setAdminRosterBusy(false); });
+  return () => { current = false; };
+ }, [role, page, adminEventId]);
 
  const organizerOptions = useMemo(() => { const organizers = users.filter(user => String(user.role || "").toLowerCase() === "organizer"); return organizers.length ? organizers : users; }, [users]);
  const userById = useMemo(() => new Map(users.map(user => [user.id, user])), [users]);
@@ -72,7 +94,7 @@ export default function App() {
  const ownEvents = useMemo(() => events.filter(e => organizerId && e.organizer_id === organizerId), [events, organizerId]);
  const adminSelected = adminRows.find(row => row.event.id === adminEventId) || null;
  const organizers = new Set(events.map(e => e.organizer_id).filter(Boolean)).size;
- const totalRegistrations = adminRows.reduce((n, row) => n + row.attendees.length, 0);
+ const totalRegistrations = events.reduce((n, event) => n + Number(event.registration_count || 0), 0);
  const roles = ["Student", "Organizer", "Admin"];
 
  function switchRole(value) { setRole(value); save("campushub-role", value); setRoleOpen(false); setPage(value === "Admin" ? "admin" : value === "Organizer" ? "organizer" : "discover"); }
@@ -81,14 +103,14 @@ export default function App() {
  async function register(event) { event.preventDefault(); if (!userId || !selected?.id) return; setBusy(true); try { await api("/api/registrations", { method: "POST", body: JSON.stringify({ user_id: userId, event_id: selected.id }) }); let updated = await eventWithLiveSeats(selected); if (updated.available_seats == null && selected.capacity != null) { const count = Number(selected.registration_count || 0) + 1; updated = { ...selected, registration_count: count, available_seats: Math.max(Number(selected.capacity) - count, 0), is_full: count >= Number(selected.capacity) }; } setEvents(current => current.map(item => item.id === updated.id ? { ...item, ...updated } : item)); setSelected(updated); setModal(""); show("Registration confirmed. Seat availability updated."); if (role === "Student") setPage("registrations"); await loadMyRegistrations(); } catch (e) { show(e.message, "error"); if (e.message.toLowerCase().includes("full")) { const updated = await eventWithLiveSeats(selected); setEvents(current => current.map(item => item.id === selected.id ? { ...item, ...updated, is_full: true, available_seats: 0 } : item)); setSelected({ ...updated, is_full: true, available_seats: 0 }); } } finally { setBusy(false); } }
  async function details(event) { setSelected(event); setModal("details"); try { const full = await api(`/api/events/${encodeURIComponent(event.id)}`); setSelected(full); } catch { /* keep the event from the list */ } }
  async function loadOrganizerRoster(id) { setRosterId(id); setAttendees([]); setRosterError(""); if (!id || !organizerId) return; setRosterBusy(true); try { const rows = await api(`/api/events/${encodeURIComponent(id)}/registrations?organizer_id=${encodeURIComponent(organizerId)}`); setAttendees(Array.isArray(rows) ? rows : []); } catch (e) { setRosterError(e.message); } finally { setRosterBusy(false); } }
- async function loadAdmin() { setAdminBusy(true); setAdminError(""); try { const list = await api("/api/events"); const rows = await mapLimit((Array.isArray(list) ? list : []), 5, async event => { try { const attendees = await api(`/api/events/${encodeURIComponent(event.id)}/registrations`); const roster = Array.isArray(attendees) ? attendees : []; const capacity = event.capacity == null ? null : Number(event.capacity); return { event: { ...event, registration_count: roster.length, available_seats: capacity == null ? null : Math.max(capacity - roster.length, 0), is_full: capacity != null && roster.length >= capacity }, attendees: roster }; } catch { return { event, attendees: [], failed: true }; } }); setEvents(rows.map(row => row.event)); setAdminRows(rows); if (!adminEventId && rows.length) setAdminEventId(rows[0].event.id); } catch (e) { setAdminError(e.message); } finally { setAdminBusy(false); } }
+ async function loadAdmin() { setAdminBusy(true); setAdminError(""); try { const list = await api("/api/events"); const rows = await mapLimit(Array.isArray(list) ? list : [], 5, eventWithLiveSeats); setEvents(rows); setAdminRows(rows.map(event => ({ event, attendees: event.id === adminEventId ? (adminRows.find(row => row.event.id === event.id)?.attendees || []) : [] }))); if (!rows.some(event => event.id === adminEventId)) setAdminEventId(rows[0]?.id || ""); } catch (e) { setAdminError(e.message); } finally { setAdminBusy(false); } }
  async function createEvent(event) { event.preventDefault(); const formElement = event.currentTarget; const form = new FormData(formElement); if (!organizerId) { show("Choose an organizer first.", "error"); return; } setBusy(true); try { const body = { title: String(form.get("title")).trim(), capacity: form.get("capacity") ? Number(form.get("capacity")) : null, status: String(form.get("status")), organizer_id: organizerId }; await api("/api/events", { method: "POST", body: JSON.stringify(body) }); formElement.reset(); await loadEvents(); show("Your event is published."); } catch (e) { show(e.message.includes("404") ? "The deployed backend needs the updated POST /api/events route. Redeploy Backend to enable event publishing." : e.message, "error"); } finally { setBusy(false); } }
  function exportAttendees(rows, title) { const csv = ["email,registered_at", ...rows.map(r => `"${r.users?.email || ""}","${r.created_at || ""}"`)].join("\n"); const link = document.createElement("a"); link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" })); link.download = `${(title || "attendees").replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-attendees.csv`; link.click(); URL.revokeObjectURL(link.href); }
  const navItems = role === "Admin" ? [["discover","Discover",<Compass size={15}/>],["admin","Admin Overview",<LayoutDashboard size={15}/>]] : role === "Organizer" ? [["discover","Discover",<Compass size={15}/>],["registrations","My Registrations",<Ticket size={15}/>],["organizer","Organizer Workspace",<Users size={15}/>]] : [["discover","Discover Events",<Compass size={15}/>],["registrations","My Registrations",<Ticket size={15}/>]];
  const headline = page === "admin" ? <>Campus-wide<br/><em>event overview.</em></> : page === "organizer" ? <>Make something<br/><em>happen here.</em></> : page === "registrations" ? <>Your plans,<br/><em>all in one place.</em></> : <>Make room for<br/><em>something good.</em></>;
  const subhead = page === "admin" ? "A clear view of events, organizers, and attendee activity across campus." : page === "organizer" ? "Publish campus events and take care of the people who show up." : page === "registrations" ? "Keep track of the events you’ve signed up for." : "Find workshops, meetups, and moments worth showing up for.";
 
- return <DesignApp {...{role,page,setPage,roleOpen,setRoleOpen,switchRole,navItems,users,usersLoading,usersError,userId,setUserId,organizerId,setOrganizerId,organizerOptions,events,filteredEvents,loading,error,loadEvents,loadUsers,query,setQuery,filter,setFilter,displayUser,setSelected,setModal,selected,modal,details,register,busy,notice,setNotice,registrations,regError,loadMyRegistrations,ownEvents,createEvent,rosterId,loadOrganizerRoster,rosterBusy,rosterError,attendees,attendeeSearch,setAttendeeSearch,exportAttendees,adminRows,adminBusy,adminError,adminEventId,setAdminEventId,adminSelected,adminSearch,setAdminSearch,loadAdmin,totalRegistrations,organizers}} />;
+ return <DesignApp {...{role,page,setPage,roleOpen,setRoleOpen,switchRole,navItems,users,usersLoading,usersError,userId,setUserId,organizerId,setOrganizerId,organizerOptions,events,filteredEvents,loading,error,loadEvents,loadUsers,query,setQuery,filter,setFilter,displayUser,setSelected,setModal,selected,modal,details,register,busy,notice,setNotice,registrations,regError,loadMyRegistrations,ownEvents,createEvent,rosterId,loadOrganizerRoster,rosterBusy,rosterError,attendees,attendeeSearch,setAttendeeSearch,exportAttendees,adminRows,adminBusy,adminError,adminEventId,setAdminEventId,adminRosterBusy,adminRosterError,adminSelected,adminSearch,setAdminSearch,loadAdmin,totalRegistrations,organizers}} />;
  return <div className="app-shell">
   <header className="topbar"><button className="brand" onClick={() => setPage("discover")}><span className="brand-mark"><Sparkles size={17}/></span><span className="brand-name">Campus<span>Hub</span></span><span className="term-tag">CAMPUS EVENTS</span></button>
    <nav className="main-nav">{navItems.map(([id,label,icon])=><button key={id} onClick={()=>setPage(id)} className={`nav-item ${page===id?"active":""}`}>{icon}{label}</button>)}</nav>
