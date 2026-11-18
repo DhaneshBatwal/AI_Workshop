@@ -1,5 +1,6 @@
 ﻿import { useCallback, useEffect, useMemo, useState } from "react";
 import { Activity, ArrowRight, ArrowUpRight, CalendarDays, Check, ChevronDown, CircleAlert, Compass, Download, Filter, GraduationCap, LayoutDashboard, LoaderCircle, MapPin, Plus, Search, Shield, Sparkles, Ticket, Users, X } from "lucide-react";
+import DesignApp from "./DesignApp.jsx";
 
 const API = (import.meta.env.VITE_API_BASE_URL || "https://ai-workshop-06p4.onrender.com").replace(/\/$/, "");
 const USER_KEY = "campushub-user-id";
@@ -27,6 +28,7 @@ function usersProblem(message) {
  return /404/.test(message) ? "The deployed backend is missing GET /api/users. Deploy the updated Backend folder on Render, then retry." : message;
 }
 async function eventWithLiveSeats(event) {
+ if (event.registration_count != null && Object.prototype.hasOwnProperty.call(event, "available_seats")) return event;
  try {
   const registrations = await api(`/api/events/${encodeURIComponent(event.id)}/registrations`);
   const count = Array.isArray(registrations) ? registrations.length : 0;
@@ -86,6 +88,7 @@ export default function App() {
  const headline = page === "admin" ? <>Campus-wide<br/><em>event overview.</em></> : page === "organizer" ? <>Make something<br/><em>happen here.</em></> : page === "registrations" ? <>Your plans,<br/><em>all in one place.</em></> : <>Make room for<br/><em>something good.</em></>;
  const subhead = page === "admin" ? "A clear view of events, organizers, and attendee activity across campus." : page === "organizer" ? "Publish campus events and take care of the people who show up." : page === "registrations" ? "Keep track of the events you’ve signed up for." : "Find workshops, meetups, and moments worth showing up for.";
 
+ return <DesignApp {...{role,page,setPage,roleOpen,setRoleOpen,switchRole,navItems,users,usersLoading,usersError,userId,setUserId,organizerId,setOrganizerId,organizerOptions,events,filteredEvents,loading,error,loadEvents,loadUsers,query,setQuery,filter,setFilter,displayUser,setSelected,setModal,selected,modal,details,register,busy,notice,setNotice,registrations,regError,loadMyRegistrations,ownEvents,createEvent,rosterId,loadOrganizerRoster,rosterBusy,rosterError,attendees,attendeeSearch,setAttendeeSearch,exportAttendees,adminRows,adminBusy,adminError,adminEventId,setAdminEventId,adminSelected,adminSearch,setAdminSearch,loadAdmin,totalRegistrations,organizers}} />;
  return <div className="app-shell">
   <header className="topbar"><button className="brand" onClick={() => setPage("discover")}><span className="brand-mark"><Sparkles size={17}/></span><span className="brand-name">Campus<span>Hub</span></span><span className="term-tag">CAMPUS EVENTS</span></button>
    <nav className="main-nav">{navItems.map(([id,label,icon])=><button key={id} onClick={()=>setPage(id)} className={`nav-item ${page===id?"active":""}`}>{icon}{label}</button>)}</nav>
